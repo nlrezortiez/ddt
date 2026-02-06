@@ -38,41 +38,6 @@
 
 #define _FILE_OFFSET_BITS 64
 
-#ifdef _WIN32
-    #define _USE_MATH_DEFINES
-    #include <windows.h>
-    #include <io.h>
-    #ifdef _MSC_VER
-
-        #ifdef _WIN64
-typedef int64_t ssize_t;
-        #else
-typedef int32_t ssize_t;
-        #endif
-
-        #define strtoull _strtoui64
-        #define snprintf _snprintf
-
-int gettimeofday(struct timeval* tv, void* ignored)
-{
-    FILETIME ft;
-    unsigned __int64 tmp = 0;
-    if (NULL != tv) {
-        GetSystemTimeAsFileTime(&ft);
-        tmp |= ft.dwHighDateTime;
-        tmp <<= 32;
-        tmp |= ft.dwLowDateTime;
-        tmp /= 10;
-        tmp -= 11644473600000000Ui64;
-        tv->tv_sec = (long) (tmp / 1000000UL);
-        tv->tv_usec = (long) (tmp % 1000000UL);
-    }
-    return 0;
-}
-
-    #endif
-#endif
-
 #if defined(__GNUC__)
     #include <unistd.h>
     #include <sys/time.h>
@@ -97,11 +62,7 @@ int gettimeofday(struct timeval* tv, void* ignored)
 #define BLOCKS_PER_TRANSFER 16
 #define THROWAWAY_BLOCKS    2
 
-#if defined _WIN32
-    #define m_sleep(a) Sleep((a))
-#else
-    #define m_sleep(a) usleep((a * 1000))
-#endif
+#define m_sleep(a) usleep((a * 1000))
 
 uint32_t num_sweeps = 0;
 int num_ranges = 0;
