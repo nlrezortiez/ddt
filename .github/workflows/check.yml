@@ -14,6 +14,11 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: make check replay
+      - name: Stopped replay is not a live receiver
+        run: |
+          code=0
+          python -m ddt status --file build/replay-status.json --json || code=$?
+          test "$code" -eq 1
   native:
     runs-on: ubuntu-24.04
     steps:

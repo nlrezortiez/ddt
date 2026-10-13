@@ -1,0 +1,7 @@
+#!/bin/sh
+# Installed as /usr/local/bin/ddt; no environment activation required.
+set -eu
+DDT_PROJECT_DIR="${DDT_PROJECT_DIR:-/opt/ddt/current}"
+cd "$DDT_PROJECT_DIR"
+if [ "$#" -eq 0 ]; then set -- --help; fi
+exec "${DDT_PYTHON:-$DDT_PROJECT_DIR/.venv/bin/python3}" -m ddt "$@"

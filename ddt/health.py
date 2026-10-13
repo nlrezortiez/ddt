@@ -1,31 +1,25 @@
-"""OpenRC progress check; uses monotonic time, independent of NTP."""
-
+"""OpenRC liveness probe by default; --ready checks live SDR data separately."""
 import argparse
-import json
-import os
-from pathlib import Path
-import time
+
+from .status import assess, read_status
 
 
-def healthy(path: str, max_age: float = 15.0) -> bool:
+def healthy(path: str, max_age: float = 15.0, *, ready=False) -> bool:
     try:
-        status = json.loads(Path(path).read_text())
-        if type(status["pid"]) is not int or status["pid"] <= 0:
-            return False
-        age = time.monotonic() - status["updated_monotonic"]
-        os.kill(status["pid"], 0)
-        return status["state"] != "stopped" and 0 <= age <= max_age
-    except (OSError, ValueError, KeyError, TypeError, OverflowError):
+        assessment = assess(read_status(path), max_age)
+        return assessment['ready' if ready else 'alive']
+    except (OSError, ValueError, KeyError, TypeError, IndexError, OverflowError, AttributeError):
         return False
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--file", default="/run/ddt/status.json")
-    parser.add_argument("--max-age", type=float, default=15)
+    parser.add_argument('--file', default='/run/ddt/status.json')
+    parser.add_argument('--max-age', type=float, default=15)
+    parser.add_argument('--ready', action='store_true')
     args = parser.parse_args()
-    return 0 if healthy(args.file, args.max_age) else 1
+    return 0 if healthy(args.file, args.max_age, ready=args.ready) else 1
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())

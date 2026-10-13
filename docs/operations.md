@@ -121,6 +121,15 @@ install -m 0644 deploy/openrc/sweep.conf /etc/conf.d/sweep
 cp -p /etc/ddt/detector.json "/opt/ddt/manifests/$DDT_REV.config.json"
 ```
 
+Для короткой команды `ddt status` установить wrapper. Если `/usr/local/bin/ddt`
+уже существует, сначала проверить, что это предыдущий wrapper проекта, и сохранить
+его в backup; чужую команду не перезаписывать. Можно обойтись без установки,
+вызывая `.venv/bin/python3 -m ddt status` из каталога релиза.
+
+```sh
+install -m 0755 deploy/ddt /usr/local/bin/ddt
+```
+
 В `/opt/ddt/current` допустима только ссылка, не настоящий каталог. Проверить
 `ls -ld /opt/ddt/current` (при первой установке пути ещё нет). Если там каталог —
 остановиться, не заменять его. Временная ссылка тоже не должна существовать:
@@ -135,6 +144,13 @@ rc-service sweep status
 cat /run/ddt/status.json
 tail -n 100 /var/log/ddt.log
 ```
+
+В релизе с диагностикой schema 2 дополнительно выполнить `ddt status` и
+`ddt status --json`. Код 1 означает прочитанный статус неготового устройства,
+код 2 — недоступный/неподдерживаемый статус. При первом запуске дождаться нового
+snapshot: старый файл без schema 2 отвергается. Подробности и приёмка изменений —
+[diagnostics.md](diagnostics.md). При откате на старый релиз использовать его
+прежние команды (`cat /run/ddt/status.json`), не новый интерфейс status.
 
 OpenRC принудительно использует `/run/ddt/status.json`, независимо от JSON.
 Стандартный бюджет штатной остановки приёмника — до 6 секунд (TERM, затем KILL),

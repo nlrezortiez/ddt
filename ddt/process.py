@@ -15,6 +15,12 @@ class Receiver:
     def __init__(self, command: list[str]):
         self.rows: queue.Queue[tuple[float, str]] = queue.Queue(maxsize=2048)
         self.dropped = 0
+        self.received = 0
+        self.high_watermark = 0
+        self.last_received = None
+        self.reader_errors = 0
+        self.reader_error = None
+        self._metrics_lock = threading.Lock()
         self.eof = threading.Event()
         self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                         start_new_session=True, text=True, encoding="utf-8",
@@ -32,19 +38,37 @@ class Receiver:
                     break
                 if not line.endswith("\n"):
                     raise ValueError("oversized or incomplete receiver row")
-                try:
-                    self.rows.put_nowait((time.monotonic(), line))
-                except queue.Full:
-                    try:
-                        self.rows.get_nowait()
-                    except queue.Empty:
-                        pass
-                    self.dropped += 1
-                    self.rows.put_nowait((time.monotonic(), line))
-        except (OSError, ValueError):
+                self._offer(line, time.monotonic())
+        except (OSError, ValueError) as exc:
+            with self._metrics_lock:
+                self.reader_errors += 1
+                self.reader_error = str(exc)
             LOG.exception("receiver output reader failed")
         finally:
             self.eof.set()
+
+    def _offer(self, line, received_at):
+        with self._metrics_lock:
+            self.received += 1
+            self.last_received = received_at
+            try:
+                self.rows.put_nowait((received_at, line))
+            except queue.Full:
+                try:
+                    self.rows.get_nowait()
+                    self.dropped += 1
+                except queue.Empty:
+                    pass  # Consumer already freed space: no dropped row.
+                self.rows.put_nowait((received_at, line))
+            self.high_watermark = max(self.high_watermark, self.rows.qsize())
+
+    def metrics(self):
+        with self._metrics_lock:
+            return dict(received_rows=self.received, overflow_dropped_rows=self.dropped,
+                        reader_errors=self.reader_errors, reader_error=self.reader_error,
+                        last_received_monotonic=self.last_received,
+                        queue_depth=self.rows.qsize(), queue_capacity=self.rows.maxsize,
+                        queue_high_watermark=self.high_watermark)
 
     def _stderr(self) -> None:
         try:

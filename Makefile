@@ -5,6 +5,7 @@ BUILD_DIR ?= build
 check:
 	$(PYTHON) -m unittest discover -s tests -v
 	sh -n deploy/openrc/sweep
+	sh -n deploy/ddt
 	sh -n scripts/diagnostics.sh
 	sh -n scripts/manifest.sh
 

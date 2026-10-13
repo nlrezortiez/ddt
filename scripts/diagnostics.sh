@@ -11,6 +11,13 @@ section services
 rc-service sweep status
 ps -ef
 section application
+# Resolve relative to this script, not the caller's current directory.
+DDT_DIAG_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -x "$DDT_DIAG_ROOT/.venv/bin/python3" ]; then
+    (cd "$DDT_DIAG_ROOT" && .venv/bin/python3 -m ddt status --json)
+else
+    (cd "$DDT_DIAG_ROOT" && python3 -m ddt status --json)
+fi
 cat /run/ddt/status.json
 tail -n 150 /var/log/ddt.log
 section hardware
