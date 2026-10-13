@@ -43,7 +43,7 @@ endif(${CYGWIN})
 # Settings common for shared and static libraries
 function(libhackrf_common_settings libtarget)
   target_compile_features(${libtarget} PRIVATE c_std_90)
-  set_target_properties(hackrf PROPERTIES CLEAN_DIRECT_OUTPUT 1)
+  set_target_properties(${libtarget} PROPERTIES CLEAN_DIRECT_OUTPUT 1)
 
   target_compile_definitions(
     ${libtarget} PRIVATE -DLIBRARY_VERSION="${PROJECT_VERSION}"

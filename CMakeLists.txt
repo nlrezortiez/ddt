@@ -9,7 +9,7 @@ set(CMAKE_C_FLAGS
     "$ENV{CFLAGS}"
     CACHE STRING "C Flags")
 
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 add_subdirectory(libhackrf)
 add_subdirectory(src)

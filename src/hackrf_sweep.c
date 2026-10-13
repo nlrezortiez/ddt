@@ -35,6 +35,8 @@
 #include <fcntl.h>
 #include <fftw3.h>
 #include <inttypes.h>
+#include <errno.h>
+#include <stdatomic.h>
 
 #define _FILE_OFFSET_BITS 64
 
@@ -45,6 +47,9 @@
 
 #include <signal.h>
 #include <math.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 #define FD_BUFFER_SIZE (8 * 1024)
 
@@ -92,9 +97,13 @@ int parse_u32(char* s, uint32_t* const value)
         }
     }
 
+    if (*s == '-' || *s == '+') {
+        return HACKRF_ERROR_INVALID_PARAM;
+    }
     s_end = s;
+    errno = 0;
     ulong_value = strtoul(s, &s_end, base);
-    if ((s != s_end) && (*s_end == 0)) {
+    if ((s != s_end) && (*s_end == 0) && errno == 0 && ulong_value <= UINT32_MAX) {
         *value = (uint32_t) ulong_value;
         return HACKRF_SUCCESS;
     } else {
@@ -125,11 +134,13 @@ int parse_u32_range(char* s, uint32_t* const value_min, uint32_t* const value_ma
     return HACKRF_SUCCESS;
 }
 
-volatile bool do_exit = false;
+/* Lock-free access from the USB thread, main thread and signal handler. */
+_Static_assert(ATOMIC_BOOL_LOCK_FREE == 2, "signal flag must be lock-free");
+atomic_bool do_exit = false;
 
 FILE* outfile = NULL;
-volatile uint32_t byte_count = 0;
-volatile uint64_t sweep_count = 0;
+_Atomic uint32_t byte_count = 0;
+_Atomic uint64_t sweep_count = 0;
 
 struct timeval time_start;
 struct timeval t_start;
@@ -194,7 +205,7 @@ int rx_callback(hackrf_transfer* transfer)
 
     byte_count += transfer->valid_length;
     buf = (int8_t*) transfer->buffer;
-    for (j = 0; j < BLOCKS_PER_TRANSFER; j++) {
+    for (j = 0; j < transfer->valid_length / BYTES_PER_BLOCK; j++) {
         ubuf = (uint8_t*) buf;
         if (ubuf[0] == 0x7F && ubuf[1] == 0x7F) {
             frequency = ((uint64_t) (ubuf[9]) << 56) | ((uint64_t) (ubuf[8]) << 48) |
@@ -274,7 +285,7 @@ int rx_callback(hackrf_transfer* transfer)
         }
         fprintf(outfile, "\n");
     }
-    return 0;
+    return ferror(outfile) ? -1 : 0;
 }
 
 static void usage()
@@ -307,7 +318,7 @@ static hackrf_device* device = NULL;
 
 void sigint_callback_handler(int signum)
 {
-    fprintf(stderr, "Caught signal %d\n", signum);
+    (void) signum;
     do_exit = true;
 }
 
@@ -344,7 +355,9 @@ int main(int argc, char** argv)
     int opt, i, result = 0;
     const char* path = NULL;
     const char* serial_number = NULL;
-    int exit_code = EXIT_SUCCESS;
+    int exit_code = EXIT_FAILURE;
+    bool library_initialized = false;
+    bool rx_started = false;
     struct timeval time_now;
     struct timeval time_prev;
     float time_diff;
@@ -355,6 +368,17 @@ int main(int argc, char** argv)
     uint32_t requested_fft_bin_width;
     const char* fftwWisdomPath = NULL;
     int fftw_plan_type = FFTW_MEASURE;
+
+    signal(SIGINT, &sigint_callback_handler);
+    signal(SIGTERM, &sigint_callback_handler);
+    signal(SIGPIPE, SIG_IGN);
+#ifdef __linux__
+    /* Do not keep the USB receiver open if its supervisor dies. */
+    pid_t parent_pid = getppid();
+    if (parent_pid == 1 || prctl(PR_SET_PDEATHSIG, SIGTERM) != 0 || getppid() != parent_pid) {
+        return EXIT_FAILURE;
+    }
+#endif
 
     while ((opt = getopt(argc, argv, "a:f:p:l:g:d:N:w:W:P:n1BIr:h?")) != EOF) {
         result = HACKRF_SUCCESS;
@@ -370,6 +394,9 @@ int main(int argc, char** argv)
 
         case 'f':
             result = parse_u32_range(optarg, &freq_min, &freq_max);
+            if (result != HACKRF_SUCCESS) {
+                break;
+            }
             if (freq_min >= freq_max) {
                 fprintf(
                     stderr,
@@ -418,6 +445,10 @@ int main(int argc, char** argv)
 
         case 'w':
             result = parse_u32(optarg, &requested_fft_bin_width);
+            if (result != HACKRF_SUCCESS || requested_fft_bin_width == 0) {
+                result = HACKRF_ERROR_INVALID_PARAM;
+                break;
+            }
             num_fft_bins = DEFAULT_SAMPLE_RATE_HZ / requested_fft_bin_width;
             break;
 
@@ -492,12 +523,19 @@ int main(int argc, char** argv)
         import_default_wisdom();
     }
 
-    if (lna_gain % 8) {
-        fprintf(stderr, "warning: lna_gain (-l) must be a multiple of 8\n");
+    if (lna_gain > 40 || lna_gain % 8) {
+        fprintf(stderr, "argument error: lna_gain must be 0..40 in steps of 8\n");
+        return EXIT_FAILURE;
     }
 
-    if (vga_gain % 2) {
-        fprintf(stderr, "warning: vga_gain (-g) must be a multiple of 2\n");
+    if (vga_gain > 62 || vga_gain % 2) {
+        fprintf(stderr, "argument error: vga_gain must be 0..62 in steps of 2\n");
+        return EXIT_FAILURE;
+    }
+
+    if ((finite_mode && num_sweeps == 0) || binary_output || ifft_output) {
+        fprintf(stderr, "argument error: -N must be positive; this fork supports CSV only\n");
+        return EXIT_FAILURE;
     }
 
     if (amp) {
@@ -572,10 +610,18 @@ int main(int argc, char** argv)
     fft_bin_width = (double) DEFAULT_SAMPLE_RATE_HZ / num_fft_bins;
     fftwIn = (fftwf_complex*) fftwf_malloc(sizeof(fftwf_complex) * num_fft_bins);
     fftwOut = (fftwf_complex*) fftwf_malloc(sizeof(fftwf_complex) * num_fft_bins);
+    if (!fftwIn || !fftwOut) {
+        fprintf(stderr, "FFT allocation failed\n");
+        goto cleanup;
+    }
     fftwPlan =
         fftwf_plan_dft_1d(num_fft_bins, fftwIn, fftwOut, FFTW_FORWARD, fftw_plan_type);
     pwr = (float*) fftwf_malloc(sizeof(float) * num_fft_bins);
     window = (float*) fftwf_malloc(sizeof(float) * num_fft_bins);
+    if (!fftwPlan || !pwr || !window) {
+        fprintf(stderr, "FFT initialization failed\n");
+        goto cleanup;
+    }
     for (i = 0; i < num_fft_bins; i++) {
         window[i] = (float) (0.5f * (1.0f - cos(2 * M_PI * i / (num_fft_bins - 1))));
     }
@@ -583,6 +629,7 @@ int main(int argc, char** argv)
     /* Execute the plan once to make sure it's ready to go when real
      * data starts to flow.  See issue #1366
     */
+    memset(fftwIn, 0, sizeof(fftwf_complex) * num_fft_bins);
     fftwf_execute(fftwPlan);
 
     // reset the timestamp
@@ -596,8 +643,9 @@ int main(int argc, char** argv)
             hackrf_error_name(result),
             result);
         usage();
-        return EXIT_FAILURE;
+        goto cleanup;
     }
+    library_initialized = true;
 
     result = hackrf_open_by_serial(serial_number, &device);
     if (result != HACKRF_SUCCESS) {
@@ -607,7 +655,7 @@ int main(int argc, char** argv)
             hackrf_error_name(result),
             result);
         usage();
-        return EXIT_FAILURE;
+        goto cleanup;
     }
 
     if ((NULL == path) || (strcmp(path, "-") == 0)) {
@@ -618,14 +666,14 @@ int main(int argc, char** argv)
 
     if (NULL == outfile) {
         fprintf(stderr, "Failed to open file: %s\n", path);
-        return EXIT_FAILURE;
+        goto cleanup;
     }
     /* Change outfile buffer to have bigger one to store or read data on/to HDD */
-    result = setvbuf(outfile, NULL, _IOFBF, FD_BUFFER_SIZE);
+    result = setvbuf(outfile, NULL, outfile == stdout ? _IOLBF : _IOFBF, FD_BUFFER_SIZE);
     if (result != 0) {
         fprintf(stderr, "setvbuf() failed: %d\n", result);
         usage();
-        return EXIT_FAILURE;
+        goto cleanup;
     }
 
     fprintf(outfile, "%d", num_ranges);
@@ -633,13 +681,6 @@ int main(int argc, char** argv)
         fprintf(outfile, ",%d,%d", frequencies[i], frequencies[i + 1]);
     }
     fprintf(outfile, "\n");
-
-    signal(SIGINT, &sigint_callback_handler);
-    signal(SIGILL, &sigint_callback_handler);
-    signal(SIGFPE, &sigint_callback_handler);
-    signal(SIGSEGV, &sigint_callback_handler);
-    signal(SIGTERM, &sigint_callback_handler);
-    signal(SIGABRT, &sigint_callback_handler);
 
     fprintf(
         stderr,
@@ -653,7 +694,7 @@ int main(int argc, char** argv)
             hackrf_error_name(result),
             result);
         usage();
-        return EXIT_FAILURE;
+        goto cleanup;
     }
 
     fprintf(
@@ -669,11 +710,19 @@ int main(int argc, char** argv)
             hackrf_error_name(result),
             result);
         usage();
-        return EXIT_FAILURE;
+        goto cleanup;
     }
 
     result = hackrf_set_vga_gain(device, vga_gain);
-    result |= hackrf_set_lna_gain(device, lna_gain);
+    if (result != HACKRF_SUCCESS) {
+        fprintf(stderr, "VGA gain failed: %s\n", hackrf_error_name(result));
+        goto cleanup;
+    }
+    result = hackrf_set_lna_gain(device, lna_gain);
+    if (result != HACKRF_SUCCESS) {
+        fprintf(stderr, "LNA gain failed: %s\n", hackrf_error_name(result));
+        goto cleanup;
+    }
 
     /*
      * For each range, plan a whole number of tuning steps of a certain
@@ -722,10 +771,11 @@ int main(int argc, char** argv)
             "hackrf_init_sweep() failed: %s (%d)\n",
             hackrf_error_name(result),
             result);
-        return EXIT_FAILURE;
+        goto cleanup;
     }
 
-    result |= hackrf_start_rx_sweep(device, rx_callback, NULL);
+    if (do_exit) goto cleanup;
+    result = hackrf_start_rx_sweep(device, rx_callback, NULL);
     if (result != HACKRF_SUCCESS) {
         fprintf(
             stderr,
@@ -733,8 +783,9 @@ int main(int argc, char** argv)
             hackrf_error_name(result),
             result);
         usage();
-        return EXIT_FAILURE;
+        goto cleanup;
     }
+    rx_started = true;
 
     if (amp) {
         fprintf(stderr, "call hackrf_set_amp_enable(%u)\n", amp_enable);
@@ -746,7 +797,7 @@ int main(int argc, char** argv)
                 hackrf_error_name(result),
                 result);
             usage();
-            return EXIT_FAILURE;
+            goto cleanup;
         }
     }
 
@@ -760,7 +811,7 @@ int main(int argc, char** argv)
                 hackrf_error_name(result),
                 result);
             usage();
-            return EXIT_FAILURE;
+            goto cleanup;
         }
     }
 
@@ -782,19 +833,18 @@ int main(int argc, char** argv)
             //     sweep_count,
             //     sweep_rate);
 
-            if (byte_count == 0) {
+            if (atomic_exchange(&byte_count, 0) == 0) {
                 exit_code = EXIT_FAILURE;
                 fprintf(stderr, "\nCouldn't transfer any data for one second.\n");
                 break;
             }
-            byte_count = 0;
             time_prev = time_now;
         }
     }
 
-    fflush(outfile);
     result = hackrf_is_streaming(device);
     if (do_exit) {
+        exit_code = EXIT_SUCCESS;
         fprintf(stderr, "\nExiting...\n");
     } else {
         fprintf(
@@ -816,6 +866,14 @@ int main(int argc, char** argv)
         time_diff,
         sweep_rate);
 
+cleanup:
+    if (rx_started) {
+        result = hackrf_stop_rx(device);
+        if (result != HACKRF_SUCCESS) {
+            fprintf(stderr, "hackrf_stop_rx() failed: %s\n", hackrf_error_name(result));
+            exit_code = EXIT_FAILURE;
+        }
+    }
     if (device != NULL) {
         result = hackrf_close(device);
         if (result != HACKRF_SUCCESS) {
@@ -828,16 +886,22 @@ int main(int argc, char** argv)
             fprintf(stderr, "hackrf_close() done\n");
         }
 
+    }
+    if (library_initialized) {
         hackrf_exit();
         fprintf(stderr, "hackrf_exit() done\n");
     }
 
-    fflush(outfile);
+    if (outfile != NULL && (fflush(outfile) != 0 || ferror(outfile))) {
+        exit_code = EXIT_FAILURE;
+    }
     if ((outfile != NULL) && (outfile != stdout)) {
         fclose(outfile);
         outfile = NULL;
         fprintf(stderr, "fclose() done\n");
     }
+    if (fftwPlan) fftwf_destroy_plan(fftwPlan);
+    if (ifftwPlan) fftwf_destroy_plan(ifftwPlan);
     fftwf_free(fftwIn);
     fftwf_free(fftwOut);
     fftwf_free(pwr);

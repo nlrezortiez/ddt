@@ -1,2 +1,9 @@
 .cache/*
 build/*
+build-*/
+.venv/
+scripts/.venv/
+__pycache__/
+*.py[cod]
+dist/
+.ruff_cache/

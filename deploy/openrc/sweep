@@ -1,0 +1,35 @@
+#!/sbin/openrc-run
+
+description="DDT receiver and OLED supervisor"
+supervisor="supervise-daemon"
+directory="${project_dir:-/opt/ddt/current}"
+command="${python:-${directory}/.venv/bin/python3}"
+command_args="-u -m ddt --config /etc/ddt/detector.json --status-file /run/ddt/status.json --log-file /var/log/ddt.log"
+command_user="root:root"
+pidfile="/run/sweep.pid"
+respawn_delay=5
+respawn_max=5
+respawn_period=120
+healthcheck_delay=20
+healthcheck_timer=5
+retry="TERM/12/KILL/3"
+umask=0027
+
+depend() {
+    need localmount
+    after modules hwdrivers
+    use logger
+}
+
+start_pre() {
+    checkpath --directory --mode 0750 /run/ddt || return 1
+    checkpath --file --mode 0640 /var/log/ddt.log || return 1
+    test -x "$command" && test -r /etc/ddt/detector.json || return 1
+    cd "$directory" || return 1
+    "$command" -c 'from ddt.config import Config; Config.load("/etc/ddt/detector.json")'
+}
+
+healthcheck() {
+    cd "$directory" || return 1
+    "$command" -m ddt.health --file /run/ddt/status.json --max-age 15
+}

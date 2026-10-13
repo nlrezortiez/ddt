@@ -1,0 +1,34 @@
+name: check
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  python:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: make check replay
+  native:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev libfftw3-dev
+      - run: make build
+      - run: DDT_SWEEP="$PWD/build/bin/sweep" make check
+  alpine:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: musl build and tests (no hardware)
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work alpine:3.22.2 sh -ec '
+            apk add --no-cache build-base cmake pkgconf libusb-dev fftw-dev python3
+            make BUILD_DIR=build-alpine build
+            DDT_SWEEP=/work/build-alpine/bin/sweep make check replay
+          '

@@ -35,19 +35,18 @@ if(NOT libhackrf_SOURCE_DIR)
     set_target_properties(
       HackRF::hackrf
       PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${LIBHACKRF_INCLUDE_DIR}"
-                 INTERFACE_LINK_LIBRARIES "${LIBHACKRF_LIBRARIES}"
-                 RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE`_DIR}/bin")
+                 INTERFACE_LINK_LIBRARIES "${LIBHACKRF_LIBRARIES}")
   else()
     find_package(HackRF REQUIRED)
   endif()
 endif()
 
-find_package(FFTW3f)
+find_package(FFTW3f REQUIRED)
 
 if(TARGET HackRF::hackrf)
   list(APPEND SWEEP_LINK_LIBS HackRF::hackrf)
 else()
-  list(APPEND SWEEP_LINK_LIBS HackRF::hackrf_static)
+  list(APPEND SWEEP_LINK_LIBS hackrf_static)
 endif()
 
 include(CheckLibraryExists)
@@ -59,7 +58,7 @@ endif()
 
 if(FFTW3f_FOUND)
   add_executable(sweep hackrf_sweep.c)
-  target_compile_features(sweep PRIVATE c_std_90)
+  target_compile_features(sweep PRIVATE c_std_11)
   target_link_libraries(sweep fftw3f::fftw3f ${SWEEP_LINK_LIBS})
   install(TARGETS sweep RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 else()

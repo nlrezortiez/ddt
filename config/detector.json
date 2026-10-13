@@ -1,0 +1,19 @@
+{
+  "sweep_binary": "build/bin/sweep",
+  "ranges_mhz": [[0, 6000]],
+  "excluded_mhz": [[0, 100], [2000, 2700], [5000, 5400]],
+  "threshold_db": -32.2,
+  "lna_gain": 32,
+  "vga_gain": 20,
+  "bin_width_hz": 1000000,
+  "gpio_chip": 0,
+  "i2c_port": 1,
+  "i2c_address": 60,
+  "startup_timeout": 15,
+  "data_timeout": 5,
+  "retry_delay": 2,
+  "retry_max_delay": 30,
+  "stop_timeout": 3,
+  "alert_hold": 3,
+  "status_file": "/run/ddt/status.json"
+}
